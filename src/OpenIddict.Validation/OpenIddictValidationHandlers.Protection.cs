@@ -8,7 +8,12 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using OpenIddict.Extensions;
 
@@ -32,6 +37,8 @@ public static partial class OpenIddictValidationHandlers
             ValidatePrincipal.Descriptor,
             ValidateExpirationDate.Descriptor,
             ValidateAudience.Descriptor,
+            RejectDPoPTokenAsNormalToken.Descriptor,
+            ValidateDPoPProof.Descriptor,
             ValidateTokenEntry.Descriptor,
             ValidateAuthorizationEntry.Descriptor,
 
@@ -568,6 +575,7 @@ public static partial class OpenIddictValidationHandlers
             }
         }
 
+
         /// <summary>
         /// Contains the logic responsible for rejecting authentication demands for which no valid principal was resolved.
         /// </summary>
@@ -730,6 +738,144 @@ public static partial class OpenIddictValidationHandlers
             }
         }
 
+        public sealed class RejectDPoPTokenAsNormalToken : IOpenIddictValidationHandler<ValidateTokenContext>
+        {
+            /// <summary>
+            /// Gets the default descriptor definition assigned to this handler.
+            /// </summary>
+            public static OpenIddictValidationHandlerDescriptor Descriptor { get; }
+                = OpenIddictValidationHandlerDescriptor.CreateBuilder<ValidateTokenContext>()
+                    .UseSingletonHandler<RejectDPoPTokenAsNormalToken>()
+                    .SetOrder(ValidateAudience.Descriptor.Order + 1_000)
+                    .SetType(OpenIddictValidationHandlerType.BuiltIn)
+                    .Build();
+
+            /// <inheritdoc/>
+            public ValueTask HandleAsync(ValidateTokenContext context)
+            {
+                if (context is null)
+                {
+                    throw new ArgumentNullException(nameof(context));
+                }
+
+                // Check cnf claim
+                var cnf = context.Principal?.Claims.FirstOrDefault(c => c.Type == Claims.Confirmation)?.Value;
+                if (string.IsNullOrEmpty(cnf))
+                {
+                    return default;
+                }
+
+                Dictionary<string, string>? cnfDict = JsonSerializer.Deserialize<Dictionary<string, string>>(cnf);
+
+                string? jkt = string.Empty;
+                if (cnfDict is null || !cnfDict.TryGetValue(Claims.JWKThumbprint, out jkt))
+                {
+                    return default;
+                }
+
+                // Check if the token is a DPoP token
+                if (context.Options.RequireDPoPValidation == false)
+                {
+                    context.Reject(Errors.InvalidRequest, description: "DPoP Token cannot be used as normal access token");
+                }
+
+                return default;
+            }
+        }
+
+        public sealed class ValidateDPoPProof : IOpenIddictValidationHandler<ValidateTokenContext>
+        {
+            /// <summary>
+            /// Gets the default descriptor definition assigned to this handler.
+            /// </summary>
+            public static OpenIddictValidationHandlerDescriptor Descriptor { get; }
+                = OpenIddictValidationHandlerDescriptor.CreateBuilder<ValidateTokenContext>()
+                    .AddFilter<RequireDPoPValidation>()
+                    .UseSingletonHandler<ValidateDPoPProof>()
+                    .SetOrder(RejectDPoPTokenAsNormalToken.Descriptor.Order + 1_000)
+                    .SetType(OpenIddictValidationHandlerType.BuiltIn)
+                    .Build();
+
+            /// <inheritdoc/>
+            public async ValueTask HandleAsync(ValidateTokenContext context)
+            {
+                if (context is null)
+                {
+                    throw new ArgumentNullException(nameof(context));
+                }
+
+                var DPoPProof = context.DPoPProof ??
+                    throw new InvalidOperationException(SR.GetResourceString(SR.ID0114));
+
+                var securityTokenHandler = context.Options.JsonWebTokenHandler;
+                var token = securityTokenHandler.ReadJsonWebToken(DPoPProof);
+
+                // Check ath claim
+                if (!token.TryGetClaim(Claims.AccessTokenSA256Hash, out var ath))
+                {
+                    context.Reject(Errors.InvalidDPoPProof, description: "DPoP Proof lacks the ath claim");
+                    return;
+                }
+
+                var calculatedHashBytes = OpenIddictHelpers.ComputeSha256Hash(Encoding.ASCII.GetBytes(context.Token));
+                var calculatedath = Base64UrlEncoder.Encode(calculatedHashBytes, 0, calculatedHashBytes.Length);
+
+                if (!string.Equals(ath.Value, calculatedath))
+                {
+                    context.Reject(
+                        error: Errors.InvalidDPoPProof,
+                        description: SR.GetResourceString(SR.ID2094));
+                    return;
+                }
+
+                // Check cnf claim
+                var cnf = context.Principal?.Claims.FirstOrDefault(c => c.Type == Claims.Confirmation)?.Value;
+                if (string.IsNullOrEmpty(cnf))
+                {
+                    context.Reject(Errors.InvalidDPoPProof, description: "DPoP Token lacks the cnf claim");
+                    return;
+                }
+
+                Dictionary<string, string>? cnfDict = JsonSerializer.Deserialize<Dictionary<string, string>>(cnf);
+
+                string? jkt = string.Empty;
+                if (cnfDict is null || !cnfDict.TryGetValue(Claims.JWKThumbprint, out jkt))
+                {
+                    context.Reject(Errors.InvalidDPoPProof, description: "DPoP Token lacks correct format of cnf claim");
+                    return;
+                }
+
+                var jwkHeader = token.GetHeaderValue<string>(JwtHeaderParameterNames.Jwk);
+                var jwk = new JsonWebKey(jwkHeader);
+                var signingKeyThumbprint = jwk.ComputeJwkThumbprint();
+                var calculatedJkt = Base64UrlEncoder.Encode(signingKeyThumbprint, 0, signingKeyThumbprint.Length);
+
+                if (!string.Equals(jkt, calculatedJkt))
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof, description: "DPoP Token and DPoP Proof doesn't match");
+                    return;
+                }
+
+                // Check Signature
+                var validationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = jwk,
+                    ValidateIssuer = false, // Set to true if you want to validate issuer
+                    ValidateAudience = false, // Set to true if you want to validate audience
+                    ValidateLifetime = false, // Set to true if you want to validate expiration
+                };
+
+                var result = await securityTokenHandler.ValidateTokenAsync(DPoPProof, validationParameters);
+
+                if(!result.IsValid)
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof, description: "DPoP Proof doesn't have valid signature");
+                    return;
+                }
+            }
+        }
+
         /// <summary>
         /// Contains the logic responsible for authentication demands a token whose
         /// associated token entry is no longer valid (e.g was revoked).
@@ -752,7 +898,7 @@ public static partial class OpenIddictValidationHandlers
                     .AddFilter<RequireTokenEntryValidationEnabled>()
                     .AddFilter<RequireTokenIdResolved>()
                     .UseScopedHandler<ValidateTokenEntry>()
-                    .SetOrder(ValidateAudience.Descriptor.Order + 1_000)
+                    .SetOrder(ValidateDPoPProof.Descriptor.Order + 1_000)
                     .SetType(OpenIddictValidationHandlerType.BuiltIn)
                     .Build();
 

@@ -125,6 +125,8 @@ public static partial class OpenIddictValidationEvents
         /// </summary>
         public string Token { get; set; } = default!;
 
+        public string DPoPProof { get; set; } = default!;
+
         /// <summary>
         /// Gets or sets the format of the token (e.g JWT or ASP.NET Core Data Protection) to validate, if applicable.
         /// </summary>

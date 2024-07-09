@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>$(NetCoreTargetFramework)</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+	<PackageReference Include="Quartz.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\openiddict-core\src\OpenIddict.AspNetCore\OpenIddict.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\..\..\openiddict-core\src\OpenIddict.EntityFrameworkCore\OpenIddict.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="..\..\..\..\openiddict-core\src\OpenIddict.Quartz\OpenIddict.Quartz.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -477,4 +477,10 @@ public class OpenIddictRequest : OpenIddictMessage
         get => (string?) GetParameter(OpenIddictConstants.Parameters.Username);
         set => SetParameter(OpenIddictConstants.Parameters.Username, value);
     }
+
+    public string? DPoPHeader
+    {
+        get => (string?) GetParameter(OpenIddictConstants.Parameters.DPoPHeader);
+        set => SetParameter(OpenIddictConstants.Parameters.DPoPHeader, value);
+    }
 }

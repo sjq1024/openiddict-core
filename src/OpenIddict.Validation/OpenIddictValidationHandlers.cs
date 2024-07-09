@@ -731,8 +731,13 @@ public static partial class OpenIddictValidationHandlers
             var notification = new ValidateTokenContext(context.Transaction)
             {
                 Token = context.AccessToken,
-                ValidTokenTypes = { TokenTypeHints.AccessToken }
+                ValidTokenTypes = { TokenTypeHints.AccessToken },
             };
+
+            if (!string.IsNullOrEmpty(context.DPoPProof))
+            {
+                notification.DPoPProof = context.DPoPProof;
+            }
 
             await _dispatcher.DispatchAsync(notification);
 

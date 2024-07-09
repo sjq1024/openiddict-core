@@ -199,6 +199,23 @@ public static class OpenIddictServerHandlerFilters
     }
 
     /// <summary>
+    /// Represents a filter that excludes the associated handlers when no DPoP header is attached.
+    /// </summary>
+    public sealed class RequireDPoPHeader : IOpenIddictServerHandlerFilter<BaseContext>
+    {
+        /// <inheritdoc/>
+        public ValueTask<bool> IsActiveAsync(BaseContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            return new(!string.IsNullOrEmpty(context.Transaction.Request?.DPoPHeader));
+        }
+    }
+
+    /// <summary>
     /// Represents a filter that excludes the associated handlers if the request is not a configuration request.
     /// </summary>
     public sealed class RequireConfigurationRequest : IOpenIddictServerHandlerFilter<BaseContext>

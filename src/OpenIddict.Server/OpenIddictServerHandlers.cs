@@ -9,6 +9,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -74,6 +75,7 @@ public static partial class OpenIddictServerHandlers
         InferResources.Descriptor,
         EvaluateGeneratedTokens.Descriptor,
         AttachAuthorization.Descriptor,
+        AttachDPoPCnfClaim.Descriptor,
 
         PrepareAccessTokenPrincipal.Descriptor,
         PrepareAuthorizationCodePrincipal.Descriptor,
@@ -97,6 +99,7 @@ public static partial class OpenIddictServerHandlers
         BeautifyGeneratedTokens.Descriptor,
 
         AttachSignInParameters.Descriptor,
+        AttachDPoPSignInParameters.Descriptor,
         AttachCustomSignInParameters.Descriptor,
 
         /*
@@ -2790,6 +2793,58 @@ public static partial class OpenIddictServerHandlers
         }
     }
 
+    public sealed class AttachDPoPCnfClaim : IOpenIddictServerHandler<ProcessSignInContext>
+    {
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictServerHandlerDescriptor Descriptor { get; }
+            = OpenIddictServerHandlerDescriptor.CreateBuilder<ProcessSignInContext>()
+                .AddFilter<RequireDPoPHeader>()
+                .UseScopedHandler<AttachDPoPCnfClaim>()
+                .SetOrder(AttachAuthorization.Descriptor.Order + 1_000)
+                .SetType(OpenIddictServerHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public ValueTask HandleAsync(ProcessSignInContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            Debug.Assert(context.Principal is { Identity: ClaimsIdentity }, SR.GetResourceString(SR.ID4006));
+
+            var DPoPHeader = context.Transaction.Request?.DPoPHeader;
+            var securityTokenHandler = context.Options.JsonWebTokenHandler;
+
+            var token = securityTokenHandler.ReadJsonWebToken(DPoPHeader);
+            var jwkHeader = token.GetHeaderValue<string>(JwtHeaderParameterNames.Jwk);
+
+            var jwk =new JsonWebKey(jwkHeader);
+            var signingKeyThumbprint = jwk.ComputeJwkThumbprint();
+
+            var jkt = new Dictionary<string, string?>
+            {
+                [Claims.JWKThumbprint] = Convert.ToBase64String(signingKeyThumbprint)
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_')
+            };
+
+            context.Principal.SetClaim(Claims.Confirmation, jkt);
+
+            var builder = ImmutableDictionary.CreateBuilder<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            builder.Add(Claims.Confirmation, new[] { Destinations.AccessToken, Destinations.IdentityToken });
+            var destinations = builder.ToImmutable();
+
+            context.Principal.SetDestinations(destinations);
+
+            return default;
+        }
+    }
+
     /// <summary>
     /// Contains the logic responsible for preparing and attaching the claims principal
     /// used to generate the access token, if one is going to be returned.
@@ -2818,7 +2873,7 @@ public static partial class OpenIddictServerHandlers
                         new PrepareAccessTokenPrincipal(provider.GetService<IOpenIddictApplicationManager>() ??
                             throw new InvalidOperationException(SR.GetResourceString(SR.ID0016)));
                 })
-                .SetOrder(AttachAuthorization.Descriptor.Order + 1_000)
+                .SetOrder(AttachDPoPCnfClaim.Descriptor.Order + 1_000)
                 .SetType(OpenIddictServerHandlerType.BuiltIn)
                 .Build();
 
@@ -4403,6 +4458,40 @@ public static partial class OpenIddictServerHandlers
                     // parameter is required in device authorization responses.
                     _ => 5 * 60 // 5 minutes, in seconds.
                 };
+            }
+
+            return default;
+        }
+    }
+
+    /// <summary>
+    /// Contains the logic responsible for attaching the appropriate parameters to the sign-in response.
+    /// </summary>
+    public sealed class AttachDPoPSignInParameters : IOpenIddictServerHandler<ProcessSignInContext>
+    {
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictServerHandlerDescriptor Descriptor { get; }
+            = OpenIddictServerHandlerDescriptor.CreateBuilder<ProcessSignInContext>()
+                .UseSingletonHandler<AttachDPoPSignInParameters>()
+                .AddFilter<RequireDPoPHeader>()
+                .SetOrder(AttachSignInParameters.Descriptor.Order + 1_000)
+                .SetType(OpenIddictServerHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public ValueTask HandleAsync(ProcessSignInContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            if (context.IncludeAccessToken)
+            {
+                context.Response.AccessToken = context.AccessToken;
+                context.Response.TokenType = TokenTypes.DPoP;
             }
 
             return default;

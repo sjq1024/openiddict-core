@@ -102,6 +102,8 @@ public sealed class OpenIddictValidationOptions
     /// </summary>
     public bool EnableTokenEntryValidation { get; set; }
 
+    public bool RequireDPoPValidation { get; set; }
+
     /// <summary>
     /// Gets or sets the absolute URI of the OAuth 2.0/OpenID Connect server.
     /// </summary>

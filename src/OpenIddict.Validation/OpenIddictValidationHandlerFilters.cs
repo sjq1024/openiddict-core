@@ -180,4 +180,21 @@ public static class OpenIddictValidationHandlerFilters
             return new(context.Options.EnableTokenEntryValidation);
         }
     }
+
+    /// <summary>
+    /// Represents a filter that excludes the associated handlers if token validation was not enabled.
+    /// </summary>
+    public sealed class RequireDPoPValidation : IOpenIddictValidationHandlerFilter<BaseContext>
+    {
+        /// <inheritdoc/>
+        public ValueTask<bool> IsActiveAsync(BaseContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            return new(context.Options.RequireDPoPValidation);
+        }
+    }
 }

@@ -112,6 +112,12 @@ public static class OpenIddictConstants
         public const string Username = "username";
         public const string Website = "website";
         public const string Zoneinfo = "zoneinfo";
+        public const string Confirmation = "cnf";
+        public const string JWKThumbprint = "jkt";
+        public const string HttpMethod = "htm";
+        public const string HttpTargetURI = "htu";
+        public const string AccessTokenSA256Hash = "ath";
+        public const string Type = "typ";
 
         public static class Prefixes
         {
@@ -223,6 +229,7 @@ public static class OpenIddictConstants
         public const string InvalidRequestUri = "invalid_request_uri";
         public const string InvalidScope = "invalid_scope";
         public const string InvalidToken = "invalid_token";
+        public const string InvalidDPoPProof = "invalid_dpop_proof";
         public const string LoginRequired = "login_required";
         public const string MissingToken = "missing_token";
         public const string RegistrationNotSupported = "registration_not_supported";
@@ -250,6 +257,7 @@ public static class OpenIddictConstants
     public static class JsonWebTokenTypes
     {
         public const string AccessToken = "at+jwt";
+        public const string DPoPProof = "dpop+jwt";
         public const string Jwt = "JWT";
 
         public static class Prefixes
@@ -372,6 +380,7 @@ public static class OpenIddictConstants
         public const string Username = "username";
         public const string VerificationUri = "verification_uri";
         public const string VerificationUriComplete = "verification_uri_complete";
+        public const string DPoPHeader = "dpop";
     }
 
     public static class Permissions
@@ -559,5 +568,11 @@ public static class OpenIddictConstants
     public static class TokenTypes
     {
         public const string Bearer = "Bearer";
+        public const string DPoP = "DPoP";
+    }
+
+    public static class ResponseHeaders
+    {
+        public const string DPoPNonce = "DPoP-Nonce";
     }
 }

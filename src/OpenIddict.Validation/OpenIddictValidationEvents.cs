@@ -308,6 +308,8 @@ public static partial class OpenIddictValidationEvents
         /// </summary>
         public string? AccessToken { get; set; }
 
+        public string? DPoPProof { get; set; }
+
         /// <summary>
         /// Gets or sets a boolean indicating whether an access
         /// token should be extracted from the current context.

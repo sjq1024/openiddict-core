@@ -14,7 +14,9 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.Net.Http.Headers;
+using OpenIddict.Abstractions.Managers;
 using Properties = OpenIddict.Validation.AspNetCore.OpenIddictValidationAspNetCoreConstants.Properties;
 
 #if SUPPORTS_JSON_NODES
@@ -36,9 +38,11 @@ public static partial class OpenIddictValidationAspNetCoreHandlers
          * Authentication processing:
          */
         ValidateHostHeader.Descriptor,
+        ValidateDPoPHeader.Descriptor,
         ExtractAccessTokenFromAuthorizationHeader.Descriptor,
         ExtractAccessTokenFromBodyForm.Descriptor,
         ExtractAccessTokenFromQueryString.Descriptor,
+        AttacDPoPNonceHeader<ProcessAuthenticationContext>.Descriptor,
 
         /*
          * Challenge processing:
@@ -52,11 +56,13 @@ public static partial class OpenIddictValidationAspNetCoreHandlers
         AttachHttpResponseCode<ProcessChallengeContext>.Descriptor,
         AttachCacheControlHeader<ProcessChallengeContext>.Descriptor,
         AttachWwwAuthenticateHeader<ProcessChallengeContext>.Descriptor,
+        AttacDPoPNonceHeader<ProcessChallengeContext>.Descriptor,
         ProcessChallengeErrorResponse<ProcessChallengeContext>.Descriptor,
 
         AttachHttpResponseCode<ProcessErrorContext>.Descriptor,
         AttachCacheControlHeader<ProcessErrorContext>.Descriptor,
         AttachWwwAuthenticateHeader<ProcessErrorContext>.Descriptor,
+        AttacDPoPNonceHeader<ProcessErrorContext>.Descriptor,
         ProcessChallengeErrorResponse<ProcessErrorContext>.Descriptor
     ]);
 
@@ -210,9 +216,17 @@ public static partial class OpenIddictValidationAspNetCoreHandlers
             // Resolve the access token from the standard Authorization header.
             // See https://tools.ietf.org/html/rfc6750#section-2.1 for more information.
             string? header = request.Headers[HeaderNames.Authorization];
-            if (!string.IsNullOrEmpty(header) && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(header))
             {
-                context.AccessToken = header["Bearer ".Length..];
+                if (header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.AccessToken = header["Bearer ".Length..];
+                }
+                else if (header.StartsWith("DPoP ", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.AccessToken = header["DPoP ".Length..];
+                    context.Options.RequireDPoPValidation = true;
+                }
 
                 return default;
             }
@@ -323,6 +337,128 @@ public static partial class OpenIddictValidationAspNetCoreHandlers
 
                 return default;
             }
+
+            return default;
+        }
+    }
+
+    public sealed class ValidateDPoPHeader : IOpenIddictValidationHandler<ProcessAuthenticationContext>
+    {
+        private readonly IOptionsMonitor<OpenIddictValidationOptions> _options;
+
+        private readonly IOpenIddictNonceManager? _nonceManager;
+
+        public ValidateDPoPHeader(IOptionsMonitor<OpenIddictValidationOptions> options, IOpenIddictNonceManager nonceManager)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _nonceManager = nonceManager;
+        }
+
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictValidationHandlerDescriptor Descriptor { get; }
+            = OpenIddictValidationHandlerDescriptor.CreateBuilder<ProcessAuthenticationContext>()
+                .AddFilter<RequireHttpRequest>()
+                .AddFilter<RequireDPoPValidation>()
+                .UseSingletonHandler<ValidateDPoPHeader>()
+                .SetOrder(ExtractAccessTokenFromQueryString.Descriptor.Order + 1_000)
+                .SetType(OpenIddictValidationHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public ValueTask HandleAsync(ProcessAuthenticationContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            // This handler only applies to ASP.NET Core requests. If the HTTP context cannot be resolved,
+            // this may indicate that the request was incorrectly processed by another server stack.
+            var request = context.Transaction.GetHttpRequest() ??
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0114));
+
+            // Reject requests that lack the DPoP header.
+            if (!request.Headers.ContainsKey("dpop"))
+            {
+                context.Reject(error: Errors.InvalidRequest, description: "Please attach DPoP Proof");
+                return default;
+            }
+
+            // Reject requests that include more than one DPoP header.
+            if (request.Headers["dpop"].Count != 1)
+            {
+                context.Reject(error: Errors.InvalidRequest, description: "Don't include more than one DPoP header");
+                return default;
+            }
+
+            var DPoPHeader = request.Headers["dpop"][0];
+            var securityTokenHandler = context.Options.JsonWebTokenHandler;
+            var token = securityTokenHandler.ReadJsonWebToken(DPoPHeader);
+
+
+            var existenceOfRequiredClaims = token.TryGetHeaderValue<string>(Claims.Type, out var typeHeader) & 
+                token.TryGetClaim(Claims.HttpMethod, out var htmClaim) &
+                token.TryGetClaim(Claims.HttpTargetURI, out var htuClaim) &
+                token.TryGetClaim(Claims.IssuedAt, out var iatClaim) &
+                token.TryGetClaim(Claims.JwtId, out var jtiClaim);
+            // Check the existence of all calims
+            if (!existenceOfRequiredClaims)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "The DPoP header doesn't contain required claims");
+                return default;
+            }
+
+            // Check the type claim
+            if (typeHeader != JsonWebTokenTypes.DPoPProof)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "The type of the DPoP JWT is not dpop+jwt");
+                return default;
+            }
+
+            // Check the HTTP method
+            if (htmClaim.Value != request.Method)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "htm claims of DPoP JWT header doesn't match current request");
+                return default;
+            }
+
+            // Check the HTTP target URI
+            if (context is not { RequestUri.IsAbsoluteUri: true })
+            {
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0127));
+            }
+
+            if (htuClaim.Value != context.RequestUri.GetLeftPart(UriPartial.Path))
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "htu claimsof DPoP JWT header doesn't match current request");
+                return default;
+            }
+
+            // Check the nonce claim
+            if (_nonceManager is not null)
+            {
+                if (!token.TryGetClaim(Claims.Nonce, out var nonceClaim))
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof,
+                        description: "The DPoP header doesn't contain nonce claim");
+                    return default;
+                }
+
+                if (!_nonceManager.ValidateNonce(nonceClaim.Value))
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof,
+                        description: "The DPoP header doesn't has valid nonce claim");
+                    return default;
+                }
+            }
+
+            context.DPoPProof = DPoPHeader;
 
             return default;
         }
@@ -615,6 +751,58 @@ public static partial class OpenIddictValidationAspNetCoreHandlers
             }
 
             response.Headers.Append(HeaderNames.WWWAuthenticate, builder.ToString());
+
+            return default;
+        }
+    }
+    
+    public sealed class AttacDPoPNonceHeader<TContext> : IOpenIddictValidationHandler<TContext> where TContext : BaseRequestContext
+    {
+        private readonly IOptionsMonitor<OpenIddictValidationOptions> _options;
+
+        private readonly IOpenIddictNonceManager? _nonceManager;
+
+        public AttacDPoPNonceHeader(IOptionsMonitor<OpenIddictValidationOptions> options, IOpenIddictNonceManager nonceManager)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _nonceManager = nonceManager ?? throw new ArgumentNullException(nameof(nonceManager));
+        }
+
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictValidationHandlerDescriptor Descriptor { get; }
+            = OpenIddictValidationHandlerDescriptor.CreateBuilder<TContext>()
+                .AddFilter<RequireHttpRequest>()
+                .UseSingletonHandler<AttacDPoPNonceHeader<TContext>>()
+                .SetOrder(AttachWwwAuthenticateHeader<TContext>.Descriptor.Order + 1_000)
+                .SetType(OpenIddictValidationHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public ValueTask HandleAsync(TContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            //Debug.Assert(context.Transaction.Response is not null, SR.GetResourceString(SR.ID4007));
+
+            // This handler only applies to ASP.NET Core requests. If the HTTP context cannot be resolved,
+            // this may indicate that the request was incorrectly processed by another server stack.
+            var response = context.Transaction.GetHttpRequest()?.HttpContext.Response ??
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0114));
+
+            if (_nonceManager != null)
+            {
+                string dpopNonce = _nonceManager.GetLatestNonce();
+
+                if (dpopNonce != null)
+                {
+                    response.Headers.Append(ResponseHeaders.DPoPNonce, dpopNonce);
+                }
+            }
 
             return default;
         }

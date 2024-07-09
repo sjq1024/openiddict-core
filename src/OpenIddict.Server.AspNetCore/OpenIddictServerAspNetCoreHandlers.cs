@@ -15,7 +15,10 @@ using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.Net.Http.Headers;
+using OpenIddict.Abstractions.Managers;
 using OpenIddict.Extensions;
 using Properties = OpenIddict.Server.AspNetCore.OpenIddictServerAspNetCoreConstants.Properties;
 
@@ -644,6 +647,147 @@ public static partial class OpenIddictServerAspNetCoreHandlers
         }
     }
 
+    public sealed class ValidateDPoPHeader<TContext> : IOpenIddictServerHandler<TContext> where TContext : BaseValidatingContext
+    {
+        private readonly IOptionsMonitor<OpenIddictServerAspNetCoreOptions> _options;
+
+        private readonly IOpenIddictNonceManager? _nonceManager;
+
+        public ValidateDPoPHeader(IOptionsMonitor<OpenIddictServerAspNetCoreOptions> options, IOpenIddictNonceManager nonceManager)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _nonceManager = nonceManager;
+        }
+
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictServerHandlerDescriptor Descriptor { get; }
+            = OpenIddictServerHandlerDescriptor.CreateBuilder<TContext>()
+                .AddFilter<RequireHttpRequest>()
+                .UseSingletonHandler<ValidateDPoPHeader<TContext>>()
+                .SetOrder(ExtractPostRequest<TContext>.Descriptor.Order + 1_000)
+                .SetType(OpenIddictServerHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public async ValueTask HandleAsync(TContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            Debug.Assert(context.Transaction.Request is not null, SR.GetResourceString(SR.ID4008));
+
+            // This handler only applies to ASP.NET Core requests. If the HTTP context cannot be resolved,
+            // this may indicate that the request was incorrectly processed by another server stack.
+            var request = context.Transaction.GetHttpRequest() ??
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0114));
+
+            if (!request.Headers.ContainsKey("dpop"))
+            {
+                return;
+            }
+
+            // Reject requests that include more than one DPoP header.
+            if (request.Headers["dpop"].Count != 1)
+            {
+                context.Reject(error: Errors.InvalidRequest,
+                    description: "Don't include more than one DPoP header");
+                return;
+            }
+
+            var DPoPHeader = request.Headers["dpop"][0];
+            var securityTokenHandler = context.Options.JsonWebTokenHandler;
+            var token = securityTokenHandler.ReadJsonWebToken(DPoPHeader);
+
+
+            var existenceOfRequiredClaims = token.TryGetHeaderValue<string>(Claims.Type, out var typeHeader) & 
+                token.TryGetClaim(Claims.HttpMethod, out var htmClaim) &
+                token.TryGetClaim(Claims.HttpTargetURI, out var htuClaim) &
+                token.TryGetClaim(Claims.IssuedAt, out var iatClaim) &
+                token.TryGetClaim(Claims.JwtId, out var jtiClaim);
+            // Check the existence of all calims
+            if (!existenceOfRequiredClaims)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "The DPoP header doesn't contain required claims");
+                return;
+            }
+
+            // Check the type claim
+            if (typeHeader != JsonWebTokenTypes.DPoPProof)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "The type of the DPoP JWT is not dpop+jwt");
+                return;
+            }
+
+            // Check the HTTP method
+            if (htmClaim.Value != request.Method)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "htm claims of DPoP JWT header doesn't match current request");
+                return;
+            }
+
+            if (context is not { RequestUri.IsAbsoluteUri: true })
+            {
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0127));
+            }
+
+            if (htuClaim.Value != context.RequestUri.GetLeftPart(UriPartial.Path))
+            {
+                context.Reject(error: Errors.InvalidDPoPProof,
+                    description: "htu claims of DPoP JWT header doesn't match current request");
+                return;
+            }
+
+            // Check the nonce claim
+            if (_nonceManager is not null)
+            {
+                if (!token.TryGetClaim(Claims.Nonce, out var nonceClaim))
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof,
+                        description: "The DPoP header doesn't contain nonce claim");
+                    return;
+                }
+
+                if(!_nonceManager.ValidateNonce(nonceClaim.Value))
+                {
+                    context.Reject(error: Errors.InvalidDPoPProof,
+                        description: "The DPoP header doesn't has valid nonce claim");
+                    return;
+                }
+            }
+
+            // Check Signature
+            var jwkHeader = token.GetHeaderValue<string>(JwtHeaderParameterNames.Jwk);
+            var jwk = new JsonWebKey(jwkHeader);
+            var validationParameters = new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = jwk,
+                ValidateIssuer = false, // Set to true if you want to validate issuer
+                ValidateAudience = false, // Set to true if you want to validate audience
+                ValidateLifetime = false, // Set to true if you want to validate expiration
+            };
+
+            var result = await securityTokenHandler.ValidateTokenAsync(DPoPHeader, validationParameters);
+
+            if (!result.IsValid)
+            {
+                context.Reject(error: Errors.InvalidDPoPProof, description: "DPoP Proof doesn't have valid signature");
+                return;
+            }
+
+            context.Transaction.Request.DPoPHeader = request.Headers["dpop"][0];
+
+            return;
+        }
+    }
+
     /// <summary>
     /// Contains the logic responsible for validating the authentication method used by the client application.
     /// Note: this handler is not used when the OpenID Connect request is not initially handled by ASP.NET Core.
@@ -658,7 +802,7 @@ public static partial class OpenIddictServerAspNetCoreHandlers
             = OpenIddictServerHandlerDescriptor.CreateBuilder<TContext>()
                 .AddFilter<RequireHttpRequest>()
                 .UseSingletonHandler<ValidateClientAuthenticationMethod<TContext>>()
-                .SetOrder(ExtractPostRequest<TContext>.Descriptor.Order + 1_000)
+                .SetOrder(ValidateDPoPHeader<TContext>.Descriptor.Order + 1_000)
                 .SetType(OpenIddictServerHandlerType.BuiltIn)
                 .Build();
 
@@ -1115,6 +1259,58 @@ public static partial class OpenIddictServerAspNetCoreHandlers
         }
     }
 
+    public sealed class AttacDPoPNonceHeader<TContext> : IOpenIddictServerHandler<TContext> where TContext : BaseRequestContext
+    {
+        private readonly IOptionsMonitor<OpenIddictServerAspNetCoreOptions> _options;
+
+        private readonly IOpenIddictNonceManager? _nonceManager;
+
+        public AttacDPoPNonceHeader(IOptionsMonitor<OpenIddictServerAspNetCoreOptions> options, IOpenIddictNonceManager nonceManager)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _nonceManager = nonceManager ?? throw new ArgumentNullException(nameof(nonceManager));
+        }
+
+        /// <summary>
+        /// Gets the default descriptor definition assigned to this handler.
+        /// </summary>
+        public static OpenIddictServerHandlerDescriptor Descriptor { get; }
+            = OpenIddictServerHandlerDescriptor.CreateBuilder<TContext>()
+                .AddFilter<RequireHttpRequest>()
+                .UseSingletonHandler<AttacDPoPNonceHeader<TContext>>()
+                .SetOrder(AttachWwwAuthenticateHeader<TContext>.Descriptor.Order + 1_000)
+                .SetType(OpenIddictServerHandlerType.BuiltIn)
+                .Build();
+
+        /// <inheritdoc/>
+        public ValueTask HandleAsync(TContext context)
+        {
+            if (context is null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            Debug.Assert(context.Transaction.Response is not null, SR.GetResourceString(SR.ID4007));
+
+            // This handler only applies to ASP.NET Core requests. If the HTTP context cannot be resolved,
+            // this may indicate that the request was incorrectly processed by another server stack.
+            var response = context.Transaction.GetHttpRequest()?.HttpContext.Response ??
+                throw new InvalidOperationException(SR.GetResourceString(SR.ID0114));
+
+            if (_nonceManager != null)
+            {
+                string dpopNonce = _nonceManager.GetLatestNonce();
+
+                if (dpopNonce != null)
+                {
+                    response.Headers.Append(ResponseHeaders.DPoPNonce, dpopNonce);
+                }
+            }
+
+            return default;
+        }
+    }
+
     /// <summary>
     /// Contains the logic responsible for processing challenge responses that contain a WWW-Authenticate header.
     /// Note: this handler is not used when the OpenID Connect request is not initially handled by ASP.NET Core.
@@ -1128,7 +1324,7 @@ public static partial class OpenIddictServerAspNetCoreHandlers
             = OpenIddictServerHandlerDescriptor.CreateBuilder<TContext>()
                 .AddFilter<RequireHttpRequest>()
                 .UseSingletonHandler<ProcessChallengeErrorResponse<TContext>>()
-                .SetOrder(AttachWwwAuthenticateHeader<TContext>.Descriptor.Order + 1_000)
+                .SetOrder(AttacDPoPNonceHeader<TContext>.Descriptor.Order + 1_000)
                 .SetType(OpenIddictServerHandlerType.BuiltIn)
                 .Build();
 

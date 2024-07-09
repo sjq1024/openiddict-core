@@ -17,6 +17,7 @@ public static partial class OpenIddictServerAspNetCoreHandlers
              * Token request extraction:
              */
             ExtractPostRequest<ExtractTokenRequestContext>.Descriptor,
+            ValidateDPoPHeader<ExtractTokenRequestContext>.Descriptor,
             ValidateClientAuthenticationMethod<ExtractTokenRequestContext>.Descriptor,
             ExtractBasicAuthenticationCredentials<ExtractTokenRequestContext>.Descriptor,
 
@@ -31,6 +32,7 @@ public static partial class OpenIddictServerAspNetCoreHandlers
             AttachHttpResponseCode<ApplyTokenResponseContext>.Descriptor,
             AttachCacheControlHeader<ApplyTokenResponseContext>.Descriptor,
             AttachWwwAuthenticateHeader<ApplyTokenResponseContext>.Descriptor,
+            AttacDPoPNonceHeader<ApplyTokenResponseContext>.Descriptor,
             ProcessJsonResponse<ApplyTokenResponseContext>.Descriptor
         ]);
     }

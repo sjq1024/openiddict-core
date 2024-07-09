@@ -157,6 +157,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenIddict.Sandbox.WinForms
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "OpenIddict.Sandbox.Console.Client", "sandbox\OpenIddict.Sandbox.Console.Client\OpenIddict.Sandbox.Console.Client.csproj", "{819CD7AA-01FD-4369-BABF-5DFCB7E94068}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{89A145B1-1756-4965-A109-AF2669BA32DE}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Aridka.Server", "samples\Aridka.Server\Aridka.Server.csproj", "{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -383,6 +387,10 @@ Global
 		{819CD7AA-01FD-4369-BABF-5DFCB7E94068}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{819CD7AA-01FD-4369-BABF-5DFCB7E94068}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{819CD7AA-01FD-4369-BABF-5DFCB7E94068}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -443,6 +451,7 @@ Global
 		{D0C56832-6557-4CC1-91EA-7B31B18BEE7A} = {F47D1283-0EE9-4728-8026-58405C29B786}
 		{35997586-8AAB-4EE5-A022-3E5BD12746CE} = {F47D1283-0EE9-4728-8026-58405C29B786}
 		{819CD7AA-01FD-4369-BABF-5DFCB7E94068} = {F47D1283-0EE9-4728-8026-58405C29B786}
+		{A225BAC5-5D9B-4F52-AD1E-8FF135E474C1} = {89A145B1-1756-4965-A109-AF2669BA32DE}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A710059F-0466-4D48-9B3A-0EF4F840B616}
